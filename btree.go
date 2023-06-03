@@ -47,6 +47,7 @@ func NewFreeList(size int) *FreeList {
 	return &FreeList{freelist: make([]*node, 0, size)}
 }
 
+// 一番右端のノードを取得して返す、端のノードを取り除いたfreelist設定しなおす。
 func (f *FreeList) newNode() (n *node) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -57,5 +58,16 @@ func (f *FreeList) newNode() (n *node) {
 	n = f.freelist[index]
 	f.freelist[index] = nil
 	f.freelist = f.freelist[:index]
+	return
+}
+
+// 与えられたノードをリストに追加し、追加された場合はtrueを、破棄された場合はfalseを返す。
+func (f *FreeList) freeNode(n *node) (out bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.freelist) < cap(f.freelist) {
+		f.freelist = append(f.freelist, n)
+		out = true
+	}
 	return
 }
