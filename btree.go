@@ -71,3 +71,19 @@ func (f *FreeList) freeNode(n *node) (out bool) {
 	}
 	return
 }
+
+func New(degree int) *BTree {
+	return NewWithFreeList(degree, NewFreeList(DefaultFreeListSize))
+}
+
+// 与えられたノードフリーリストを使用する新しい B-Tree を作成します。
+func NewWithFreeList(degree int, f *FreeList) *BTree {
+	if degree <= 1 {
+		panic("bad degree")
+	}
+	return &BTree{
+		degree: degree,
+		cow:    &copyOnWriteContext{freelist: f},
+	}
+}
+
