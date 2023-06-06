@@ -180,3 +180,97 @@ func (s *children) truncate(index int) {
 }
 
 // node
+//nodeは、木の内部ノードである。
+// このノードは、常に、 * len(children) == 0, len(items) unconstrained * len(children) == len(items) + 1 という不変性を保持していなければならない。
+
+// cow の newnode(freelistの端のnode res)を、n のnodenのitems,childrenをコピーして返す。
+func (n *node) mutableFor(cow *copyOnWriteContext) *node {
+	if n.cow == cow {
+		return n
+	}
+	out := cow.newNode()
+	if cap(out.items) >= len(n.items) {
+		out.items = out.items[:len(n.items)]
+	} else {
+		out.items = make(items, len(n.items), cap(n.items))
+	}
+	copy(out.items, n.items)
+	// Copy children
+	if cap(out.children) >= len(n.children) {
+		out.children = out.children[:len(n.children)]
+	} else {
+		out.children = make(children, len(n.children), cap(n.children))
+	}
+	copy(out.children, n.children)
+	return out
+}
+
+func (n *node) mutableChild(i int) *node {
+	c := n.children[i].mutableFor(n.cow)
+	n.children[i] = c
+	return c
+}
+
+// split は、与えられたノードを与えられたインデックスで分割する。
+// 現在のノードは縮小し、この関数はそのインデックスに存在していたアイテムと、それ以降のすべてのアイテム/子ノードを含む新しいノードを返す。
+func (n *node) split(i int) (Item, *node) {
+	item := n.items[i]
+	next := n.cow.newNode()
+	next.items = append(next.items, n.items[i+1:]...)
+	n.items.truncate(i)
+	if len(n.children) > 0 {
+		next.children = append(next.children, n.children[i+1:]...)
+		n.children.truncate(i + 1)
+	}
+	return item, next
+}
+
+// maybeSplitChildは、子機が分割されるべきかどうかをチェックし、分割される場合は分割する。分割が行われたかどうかを返します。
+func (n *node) maybeSplitChild(i, maxItems int) bool {
+	if len(n.children[i].items) < maxItems {
+		return false
+	}
+	// i個目の子ノードをコピーしたnodeを返す。
+	first := n.mutableChild(i)
+	// 分割
+	item, second := first.split(maxItems / 2)
+	// itemsにi個目にitemをinsert
+	n.items.insertAt(i, item)
+	n.children.insertAt(i+1, second)
+	return true
+}
+
+// insert は、このノードをルートとするサブツリーにアイテムを挿入し、
+// サブツリー内のノードが maxItems アイテムを超えていないことを確認する。 insertによって同等のアイテムが見つかったり置き換えられたりした場合は、それが返されます。
+func (n *node) insert(item Item, maxItems int) Item {
+	i, found := n.items.find(item)
+	if found {
+		out := n.items[i]
+		n.items[i] = item
+		return out
+	}
+	if len(n.children) == 0 {
+		n.items.insertAt(i, item)
+		return nil
+	}
+	if n.maybeSplitChild(i, maxItems) {
+		inTree := n.items[i]
+		switch {
+		case item.Less(inTree):
+			// no change, we want first split node
+		case inTree.Less(item):
+			i++ // we want second split node
+		default:
+			out := n.items[i]
+			n.items[i] = item
+			return out
+		}
+	}
+	return n.mutableChild(i).insert(item, maxItems)
+}
+
+func (c *copyOnWriteContext) newNode() (n *node) {
+	n = c.freelist.newNode()
+	n.cow = c
+	return
+}
