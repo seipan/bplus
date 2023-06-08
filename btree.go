@@ -37,10 +37,21 @@ type (
 		root   *node
 		cow    *copyOnWriteContext
 	}
+
+	toRemove int
+	freeType int
 )
 
 const (
 	DefaultFreeListSize = 32
+
+	removeItem toRemove = iota // 与えられた項目を削除します。
+	removeMin                  // サブツリー内の最小の項目を削除します。
+	removeMax                  // サブツリーの最大の項目を削除します。
+
+	ftFreelistFull freeType = iota // ノードが解放された（GCで利用可能、フリーリストに保存されない）。
+	ftStored                       // ノードがフリーリストに保存され、後で使用されるようになった
+	ftNotOwned                     // ノードは、別のノードに所有されているため、COWによって無視されました。
 )
 
 var (
@@ -280,6 +291,7 @@ func (n *node) get(key Item) Item {
 	return nil
 }
 
+// minは、サブツリーの最初の項目を返す。
 func min(n *node) Item {
 	if n == nil {
 		return nil
@@ -293,6 +305,7 @@ func min(n *node) Item {
 	return n.items[0]
 }
 
+// max は、サブツリーの最後の項目を返す。
 func max(n *node) Item {
 	if n == nil {
 		return nil
@@ -306,8 +319,109 @@ func max(n *node) Item {
 	return n.items[len(n.items)-1]
 }
 
+func (n *node) remove(item Item, minItems int, typ toRemove) Item {
+	var i int
+	var found bool
+	switch typ {
+	case removeMax:
+		if len(n.children) == 0 {
+			return n.items.pop()
+		}
+		i = len(n.items)
+	case removeMin:
+		if len(n.children) == 0 {
+			return n.items.removeAt(0)
+		}
+		i = 0
+	case removeItem:
+		i, found = n.items.find(item)
+		if len(n.children) == 0 {
+			if found {
+				return n.items.removeAt(i)
+			}
+			return nil
+		}
+	default:
+		panic("invalid type")
+	}
+	// If we get to here, we have children.
+	if len(n.children[i].items) <= minItems {
+		return n.growChildAndRemove(i, item, minItems, typ)
+	}
+	child := n.mutableChild(i)
+	// Either we had enough items to begin with, or we've done some
+	// merging/stealing, because we've got enough now and we're ready to return
+	// stuff.
+	if found {
+		// The item exists at index 'i', and the child we've selected can give us a
+		// predecessor, since if we've gotten here it's got > minItems items in it.
+		out := n.items[i]
+		// We use our special-case 'remove' call with typ=maxItem to pull the
+		// predecessor of item i (the rightmost leaf of our immediate left child)
+		// and set it into where we pulled the item from.
+		n.items[i] = child.remove(nil, minItems, removeMax)
+		return out
+	}
+	// Final recursive call.  Once we're here, we know that the item isn't in this
+	// node and that the child is big enough to remove from.
+	return child.remove(item, minItems, typ)
+}
+
+func (n *node) growChildAndRemove(i int, item Item, minItems int, typ toRemove) Item {
+	if i > 0 && len(n.children[i-1].items) > minItems {
+		// Steal from left child
+		child := n.mutableChild(i)
+		stealFrom := n.mutableChild(i - 1)
+		stolenItem := stealFrom.items.pop()
+		child.items.insertAt(0, n.items[i-1])
+		n.items[i-1] = stolenItem
+		if len(stealFrom.children) > 0 {
+			child.children.insertAt(0, stealFrom.children.pop())
+		}
+	} else if i < len(n.items) && len(n.children[i+1].items) > minItems {
+		// steal from right child
+		child := n.mutableChild(i)
+		stealFrom := n.mutableChild(i + 1)
+		stolenItem := stealFrom.items.removeAt(0)
+		child.items = append(child.items, n.items[i])
+		n.items[i] = stolenItem
+		if len(stealFrom.children) > 0 {
+			child.children = append(child.children, stealFrom.children.removeAt(0))
+		}
+	} else {
+		if i >= len(n.items) {
+			i--
+		}
+		child := n.mutableChild(i)
+		// merge with right child
+		mergeItem := n.items.removeAt(i)
+		mergeChild := n.children.removeAt(i + 1)
+		child.items = append(child.items, mergeItem)
+		child.items = append(child.items, mergeChild.items...)
+		child.children = append(child.children, mergeChild.children...)
+		n.cow.freeNode(mergeChild)
+	}
+	return n.remove(item, minItems, typ)
+}
+
 func (c *copyOnWriteContext) newNode() (n *node) {
 	n = c.freelist.newNode()
 	n.cow = c
 	return
+}
+
+func (c *copyOnWriteContext) freeNode(n *node) freeType {
+	if n.cow == c {
+		// clear to allow GC
+		n.items.truncate(0)
+		n.children.truncate(0)
+		n.cow = nil
+		if c.freelist.freeNode(n) {
+			return ftStored
+		} else {
+			return ftFreelistFull
+		}
+	} else {
+		return ftNotOwned
+	}
 }
