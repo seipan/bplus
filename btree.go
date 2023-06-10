@@ -144,7 +144,7 @@ func (s *items) truncate(index int) {
 }
 
 // find は、与えられた項目をこのリストに挿入するためのインデックスを返す。 'found' は、その項目が既にリストの中の与えられたインデックスに存在する場合に真となる。
-// itemより小さいs[i]を探す、なのでs[i-1]はitemより大きいか同じ、!s[i-1].Less(item)はs[i-1]よりitemが小さくないので同じになる
+// itemより大きいs[i]を探す、なのでs[i-1]はitemより小さいか同じ、!s[i-1].Less(item)はs[i-1]よりitemが大きくないので同じになる
 func (s items) find(item Item) (index int, found bool) {
 	i := sort.Search(len(s), func(i int) bool {
 		return item.Less(s[i])
@@ -216,6 +216,7 @@ func (n *node) mutableFor(cow *copyOnWriteContext) *node {
 	return out
 }
 
+// mutableChild は、与えられたインデックスの子ノードを返す。このノードは、このノードのコピーでなければならない。
 func (n *node) mutableChild(i int) *node {
 	c := n.children[i].mutableFor(n.cow)
 	n.children[i] = c
@@ -253,6 +254,7 @@ func (n *node) maybeSplitChild(i, maxItems int) bool {
 
 // insert は、このノードをルートとするサブツリーにアイテムを挿入し、
 // サブツリー内のノードが maxItems アイテムを超えていないことを確認する。 insertによって同等のアイテムが見つかったり置き換えられたりした場合は、それが返されます。
+// item より大きいアイテムが見つかった場合、そのサブツリーの前に挿入されます。ない場合はさらにその先一番最後に挿入されます。
 func (n *node) insert(item Item, maxItems int) Item {
 	i, found := n.items.find(item)
 	if found {
@@ -319,6 +321,7 @@ func max(n *node) Item {
 	return n.items[len(n.items)-1]
 }
 
+// remove は、このノードをルートとするサブツリーから項目を削除する。
 func (n *node) remove(item Item, minItems int, typ toRemove) Item {
 	var i int
 	var found bool
@@ -344,32 +347,39 @@ func (n *node) remove(item Item, minItems int, typ toRemove) Item {
 	default:
 		panic("invalid type")
 	}
-	// If we get to here, we have children.
+	// ここまでくれば、子ノードもいる。
 	if len(n.children[i].items) <= minItems {
 		return n.growChildAndRemove(i, item, minItems, typ)
 	}
 	child := n.mutableChild(i)
-	// Either we had enough items to begin with, or we've done some
-	// merging/stealing, because we've got enough now and we're ready to return
-	// stuff.
+	//もともと十分なアイテムがあったのか、それともマージやスティールをしたのか、今は十分なアイテムがあるので、物を返す準備はできています。
 	if found {
-		// The item exists at index 'i', and the child we've selected can give us a
-		// predecessor, since if we've gotten here it's got > minItems items in it.
+		// アイテムはインデックス 'i' に存在し、選択した子は前任者を与えることができる。なぜなら、ここまで来れば、 > minItems アイテムを持っているからである。
 		out := n.items[i]
-		// We use our special-case 'remove' call with typ=maxItem to pull the
-		// predecessor of item i (the rightmost leaf of our immediate left child)
-		// and set it into where we pulled the item from.
+		// 特別なケースである'remove'呼び出し（typ=maxItem）を使って、アイテムiの前任者（すぐ左の子の右端の葉）を引き出し、アイテムを引き出した場所にセットするのです。
 		n.items[i] = child.remove(nil, minItems, removeMax)
 		return out
 	}
-	// Final recursive call.  Once we're here, we know that the item isn't in this
-	// node and that the child is big enough to remove from.
+	// 最後の再帰的呼び出し。 ここまでくれば、アイテムがこのノードにないこと、子ノードが十分な大きさでそこから削除できることがわかります。
 	return child.remove(item, minItems, typ)
 }
 
+// growChildAndRemove は、子 'i' を成長させ、minItems を維持しながらそこからアイテムを取り除くことが可能であることを確認し、それから実際に取り除くために remove を呼び出します。
+// 多くのドキュメントによると、2つの特別なケーシングを行う必要があるようです：
+// 1) アイテムがこのノードの中にある
+// 2) 項目が子ノードにある
+// どちらの場合も、2つのサブケースを処理する必要があります：
+// A) ノードが十分な値を持っていて、1つの値を確保できる。
+// B) ノードが十分な値を持っていない
+// 後者の場合、以下のことを確認する必要があります：
+// a)左の兄弟にノードの予備がある
+// b) 右の兄弟に余裕のあるノードがある。
+// c) マージする必要がある
+// ノードに十分なアイテムがない場合は、（a,b,cを使用して）アイテムがあることを確認します。そして、removeコールをやり直すだけで、2回目には（ケース1でも2でも）十分なアイテムがあり、ケースAに当たることが保証されます。
+// 左から取る場合、i,i-1をコピーして,右側の子の最大を取り、iの子のコピーには一番最小にnodeのitems[i-1]を入れる,それをnodeのitems[i-1]に入れる,
 func (n *node) growChildAndRemove(i int, item Item, minItems int, typ toRemove) Item {
 	if i > 0 && len(n.children[i-1].items) > minItems {
-		// Steal from left child
+		// 左子から盗む
 		child := n.mutableChild(i)
 		stealFrom := n.mutableChild(i - 1)
 		stolenItem := stealFrom.items.pop()
