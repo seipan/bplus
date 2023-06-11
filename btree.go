@@ -1,7 +1,10 @@
 package btree
 
 import (
+	"fmt"
+	"io"
 	"sort"
+	"strings"
 	"sync"
 )
 
@@ -16,6 +19,14 @@ type (
 
 	children []*node
 
+	// ノードの書き込みコンテキストと同じ書き込みコンテキストを持つツリーは、そのノードを変更することができます。
+	// 書き込みコンテキストがノードの書き込みコンテキストと一致しないツリーは、そのノードを変更することができず、書き込み可能な新しいコピーを作成する必要があります（IE：クローンです）。
+	//
+	// 書き込み操作を行う場合、現在のノードのコンテキストは書き込みを要求したツリーのコンテキストと等しいという不変性を維持します。
+	// これは、ノードに降りる前に、コンテキストが一致しない場合に、正しいコンテキストを持つコピーを作成することで実現します。
+	//
+	// 書き込みの際に現在訪問しているノードは、要求元のツリーのコンテキストを持っているので、そのノードはその場で変更可能です。
+	// そのノードの子ノードはコンテキストを共有していないかもしれませんが、その子ノードに降りる前に、変更可能な
 	copyOnWriteContext struct {
 		freelist *FreeList
 	}
@@ -31,6 +42,8 @@ type (
 		cow      *copyOnWriteContext
 	}
 
+	// BTreeは、B-Treeの実装である。
+	//Write操作は、複数のゴルーチンによる同時変異に対して安全ではないが、Read操作は安全である。
 	BTree struct {
 		degree int
 		length int
@@ -493,12 +506,45 @@ func (n *node) iterate(dir direction, start, stop Item, includeStart bool, hit b
 	return hit, true
 }
 
+// テスト/デバッグのために使用されます。
+func (n *node) print(w io.Writer, level int) {
+	fmt.Fprintf(w, "%sNODE:%v\n", strings.Repeat("  ", level), n.items)
+	for _, c := range n.children {
+		c.print(w, level+1)
+	}
+}
+
+// Btree
+
+// Clone は btree のクローンを作成します。 Cloneは同時に呼び出すべきではありませんが、Cloneの呼び出しが完了すると、元のツリー（t）と新しいツリー（t2）は同時に使用することができます。
+// b の内部ツリー構造は読み取り専用とされ、t と t2 の間で共有されます。 tとt2の両方への書き込みは、コピーオンライトのロジックを使用し、bの元のノードの1つが変更されるたびに新しいノードを作成します。
+// 読み出し操作の性能低下はないはずです。 tとt2の両方に対する書き込み操作では、前述のコピーオンライト・ロジックによる追加的な割り当てとコピーによって、最初は小さな速度低下が発生しますが、元のツリーの性能特性に収束するはずです。
+func (t *BTree) Clone() (t2 *BTree) {
+	// コピーオンライトのコンテキストを2つ作成する。この操作により、実質的に3つのツリーが作成されます：元の共有ノード（古いb.cow） 新しいb.cowノード 新しいout.cowノード
+	cow1, cow2 := *t.cow, *t.cow
+	out := *t
+	t.cow = &cow1
+	out.cow = &cow2
+	return &out
+}
+
+// maxItems は、ノードごとに許可するアイテムの最大数を返します。
+func (t *BTree) maxItems() int {
+	return t.degree*2 - 1
+}
+
+// minItemsは、ノードごとに許可するアイテムの最小数を返します（ルートノードでは無視されます）。
+func (t *BTree) minItems() int {
+	return t.degree - 1
+}
+
 func (c *copyOnWriteContext) newNode() (n *node) {
 	n = c.freelist.newNode()
 	n.cow = c
 	return
 }
 
+// freeNodeは、与えられたCOWコンテキスト内のノードを解放します（そのコンテキストによって所有されている場合）。 それは、ノードに何が起こったかを返します（freeType constのドキュメントを参照）。
 func (c *copyOnWriteContext) freeNode(n *node) freeType {
 	if n.cow == c {
 		// clear to allow GC
@@ -514,3 +560,104 @@ func (c *copyOnWriteContext) freeNode(n *node) freeType {
 		return ftNotOwned
 	}
 }
+
+// ReplaceOrInsert は、与えられたアイテムをツリーに追加する。 もし、ツリー内のアイテムがすでに与えられたものと等しい場合は、ツリーから取り除かれて返される。そうでない場合は、nilが返されます。
+// nilはツリーに追加できません（パニックになります）。
+func (t *BTree) ReplaceOrInsert(item Item) Item {
+	if item == nil {
+		panic("nil item being added to BTree")
+	}
+	if t.root == nil {
+		t.root = t.cow.newNode()
+		t.root.items = append(t.root.items, item)
+		t.length++
+		return nil
+	} else {
+		t.root = t.root.mutableFor(t.cow)
+		if len(t.root.items) >= t.maxItems() {
+			item2, second := t.root.split(t.maxItems() / 2)
+			oldroot := t.root
+			t.root = t.cow.newNode()
+			t.root.items = append(t.root.items, item2)
+			t.root.children = append(t.root.children, oldroot, second)
+		}
+	}
+	out := t.root.insert(item, t.maxItems())
+	if out == nil {
+		t.length++
+	}
+	return out
+}
+
+// Delete は、渡された項目に等しい項目をツリーから削除し、それを返す。 そのようなアイテムが存在しない場合は、nil を返す。
+func (t *BTree) Delete(item Item) Item {
+	return t.deleteItem(item, removeItem)
+}
+
+// DeleteMinは、ツリー内の最小の項目を削除し、それを返す。そのような項目が存在しない場合は、nilを返す。
+func (t *BTree) DeleteMin() Item {
+	return t.deleteItem(nil, removeMin)
+}
+
+// DeleteMaxは、ツリー内の最大の項目を削除し、それを返す。そのような項目が存在しない場合は、nilを返します。
+func (t *BTree) DeleteMax() Item {
+	return t.deleteItem(nil, removeMax)
+}
+
+func (t *BTree) deleteItem(item Item, typ toRemove) Item {
+	if t.root == nil || len(t.root.items) == 0 {
+		return nil
+	}
+	t.root = t.root.mutableFor(t.cow)
+	out := t.root.remove(item, t.minItems(), typ)
+	if len(t.root.items) == 0 && len(t.root.children) > 0 {
+		oldroot := t.root
+		t.root = t.root.children[0]
+		t.cow.freeNode(oldroot)
+	}
+	if out != nil {
+		t.length--
+	}
+	return out
+}
+
+// AscendRange は、ツリー内のすべての値について、範囲 [greaterOrEqual, lessThan) 内で、iterator が false を返すまでイテレータを呼び出します。
+func (t *BTree) AscendRange(greaterOrEqual, lessThan Item, iterator ItemIterator) {
+	if t.root == nil {
+		return
+	}
+	t.root.iterate(ascend, greaterOrEqual, lessThan, true, false, iterator)
+}
+
+// AscendLessThan は、[first, pivot) の範囲内にあるツリーのすべての値に対して、iterator が false を返すまでイテレータを呼び出します。
+func (t *BTree) AscendLessThan(pivot Item, iterator ItemIterator) {
+	if t.root == nil {
+		return
+	}
+	t.root.iterate(ascend, nil, pivot, false, false, iterator)
+}
+
+// AscendGreaterOrEqual は、ツリー内の [pivot, last] の範囲内のすべての値について、iterator が false を返すまでイテレータを呼び出します。
+func (t *BTree) AscendGreaterOrEqual(pivot Item, iterator ItemIterator) {
+	if t.root == nil {
+		return
+	}
+	t.root.iterate(ascend, pivot, nil, true, false, iterator)
+}
+
+// iteratorがfalseを返すまで、[first, last]の範囲内にあるツリーのすべての値に対して、iteratorを呼び出します。
+func (t *BTree) Ascend(iterator ItemIterator) {
+	if t.root == nil {
+		return
+	}
+	t.root.iterate(ascend, nil, nil, false, false, iterator)
+}
+
+// // DescendRangeは、ツリー内のすべての値について、[lessOrEqual, greaterThan]の範囲内で、iteratorがfalseを返すまでイテレータを呼び出します。
+func (t *BTree) DescendRange(lessOrEqual, greaterThan Item, iterator ItemIterator) {
+	if t.root == nil {
+		return
+	}
+	t.root.iterate(descend, lessOrEqual, greaterThan, true, false, iterator)
+}
+
