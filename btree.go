@@ -37,9 +37,13 @@ type (
 		root   *node
 		cow    *copyOnWriteContext
 	}
+	// ItemIteratorは、Ascend*の呼び出し元がツリーの一部を順番に反復処理することを可能にします。
+	//この関数が false を返すと、反復処理は停止し、関連する Ascend* 関数が直ちに返されます。
+	ItemIterator func(i Item) bool
 
-	toRemove int
-	freeType int
+	toRemove  int
+	freeType  int
+	direction int
 )
 
 const (
@@ -52,6 +56,9 @@ const (
 	ftFreelistFull freeType = iota // ノードが解放された（GCで利用可能、フリーリストに保存されない）。
 	ftStored                       // ノードがフリーリストに保存され、後で使用されるようになった
 	ftNotOwned                     // ノードは、別のノードに所有されているため、COWによって無視されました。
+
+	descend = direction(-1)
+	ascend  = direction(+1)
 )
 
 var (
@@ -412,6 +419,78 @@ func (n *node) growChildAndRemove(i int, item Item, minItems int, typ toRemove) 
 		n.cow.freeNode(mergeChild)
 	}
 	return n.remove(item, minItems, typ)
+}
+
+//	iterate は、ツリー内の要素を反復処理するための簡単なメソッドを提供する。
+//
+// 昇順の場合は 'start' が 'stop' よりも小さく、降順の場合は 'start' が 'stop' よりも大きくなければなりません。
+// includeStart' を true に設定すると、イテレータが 'start' と等しい場合に最初の項目を含めるようになり、単なる "greaterThan" や "lessThan" ではなく "greaterOrEqual" や "lessThanEqual" というクエリが作成されます。
+func (n *node) iterate(dir direction, start, stop Item, includeStart bool, hit bool, iter ItemIterator) (bool, bool) {
+	var ok, found bool
+	var index int
+	switch dir {
+	case ascend:
+		if start != nil {
+			index, _ = n.items.find(start)
+		}
+		for i := index; i < len(n.items); i++ {
+			if len(n.children) > 0 {
+				if hit, ok = n.children[i].iterate(dir, start, stop, includeStart, hit, iter); !ok {
+					return hit, false
+				}
+			}
+			if !includeStart && !hit && start != nil && !start.Less(n.items[i]) {
+				hit = true
+				continue
+			}
+			hit = true
+			if stop != nil && !n.items[i].Less(stop) {
+				return hit, false
+			}
+			if !iter(n.items[i]) {
+				return hit, false
+			}
+		}
+		if len(n.children) > 0 {
+			if hit, ok = n.children[len(n.children)-1].iterate(dir, start, stop, includeStart, hit, iter); !ok {
+				return hit, false
+			}
+		}
+	case descend:
+		if start != nil {
+			index, found = n.items.find(start)
+			if !found {
+				index = index - 1
+			}
+		} else {
+			index = len(n.items) - 1
+		}
+		for i := index; i >= 0; i-- {
+			if start != nil && !n.items[i].Less(start) {
+				if !includeStart || hit || start.Less(n.items[i]) {
+					continue
+				}
+			}
+			if len(n.children) > 0 {
+				if hit, ok = n.children[i+1].iterate(dir, start, stop, includeStart, hit, iter); !ok {
+					return hit, false
+				}
+			}
+			if stop != nil && !stop.Less(n.items[i]) {
+				return hit, false //	continue
+			}
+			hit = true
+			if !iter(n.items[i]) {
+				return hit, false
+			}
+		}
+		if len(n.children) > 0 {
+			if hit, ok = n.children[0].iterate(dir, start, stop, includeStart, hit, iter); !ok {
+				return hit, false
+			}
+		}
+	}
+	return hit, true
 }
 
 func (c *copyOnWriteContext) newNode() (n *node) {
