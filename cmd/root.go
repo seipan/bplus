@@ -22,28 +22,56 @@ THE SOFTWARE.
 package cmd
 
 import (
+	"fmt"
+	"log"
 	"os"
+	"strconv"
+	"time"
 
+	"github.com/seipan/btree/btree"
 	"github.com/spf13/cobra"
 )
 
-// rootCmd represents the base command when called without any subcommands
 var rootCmd = &cobra.Command{
 	Use:   "btree",
 	Short: "A brief description of your application",
-	Long: `A longer description that spans multiple lines and likely contains
-examples and usage of using your application. For example:
+	Long:  ``,
 
-Cobra is a CLI library for Go that empowers applications.
-This application is a tool to generate the needed files
-to quickly create a Cobra application.`,
-	// Uncomment the following line if your bare application
-	// has an action associated with it:
-	// Run: func(cmd *cobra.Command, args []string) { },
+	Run: func(cmd *cobra.Command, args []string) {
+		key, err := cmd.Flags().GetString("N")
+		if err != nil {
+			log.Fatal(err)
+		}
+		mdp := btree.NewDefaultdb()
+		defer mdp.Close()
+
+		n, _ := strconv.Atoi(key)
+
+		_ = btree.New(n)
+	},
 }
 
-// Execute adds all child commands to the root command and sets flags appropriately.
-// This is called by main.main(). It only needs to happen once to the rootCmd.
+func SetMap(N int, mdp *btree.Defaultdb) {
+	fmt.Println("--------------------------- default map create ---------------------------")
+	for i := 0; i < N; i++ {
+		mdp.Set(string(i), "test"+string(i))
+	}
+	fmt.Println("--------------------------- default map create ---------------------------")
+}
+
+func GetMap(N int, mdp *btree.Defaultdb) {
+	fmt.Println("--------------------------- default map get ---------------------------")
+	mdp.GetValue("test" + string(N-2))
+	fmt.Println("--------------------------- default map get ---------------------------")
+}
+
+func Measurer(fnc func()) time.Duration {
+	start := time.Now()
+	fnc()
+	end := time.Now()
+	return end.Sub(start)
+}
+
 func Execute() {
 	err := rootCmd.Execute()
 	if err != nil {
@@ -52,13 +80,5 @@ func Execute() {
 }
 
 func init() {
-	// Here you will define your flags and configuration settings.
-	// Cobra supports persistent flags, which, if defined here,
-	// will be global for your application.
-
-	// rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.btree.yaml)")
-
-	// Cobra also supports local flags, which will only run
-	// when this action is called directly.
-	rootCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
+	rootCmd.Flags().StringP("N", "N", "", "number of keys in the tree")
 }
