@@ -57,6 +57,8 @@ type (
 	toRemove  int
 	freeType  int
 	direction int
+
+	Int int
 )
 
 const (
@@ -661,3 +663,88 @@ func (t *BTree) DescendRange(lessOrEqual, greaterThan Item, iterator ItemIterato
 	t.root.iterate(descend, lessOrEqual, greaterThan, true, false, iterator)
 }
 
+// DescendLessOrEqualは、[pivot, first]の範囲内にあるツリーのすべての値について、iteratorがfalseを返すまで、iteratorを呼び出します。
+func (t *BTree) DescendLessOrEqual(pivot Item, iterator ItemIterator) {
+	if t.root == nil {
+		return
+	}
+	t.root.iterate(descend, pivot, nil, true, false, iterator)
+}
+
+// DescendGreaterThanは、ツリー内のすべての値について、[last, pivot]の範囲内で、iteratorがfalseを返すまでイテレータを呼び出します。
+func (t *BTree) DescendGreaterThan(pivot Item, iterator ItemIterator) {
+	if t.root == nil {
+		return
+	}
+	t.root.iterate(descend, nil, pivot, false, false, iterator)
+}
+
+// Descend calls the iterator for every value in the tree within the range [last, first], until iterator returns false.
+func (t *BTree) Descend(iterator ItemIterator) {
+	if t.root == nil {
+		return
+	}
+	t.root.iterate(descend, nil, nil, false, false, iterator)
+}
+
+// Get は、ツリーの中からキーとなる項目を探し、それを返す。 その項目が見つからない場合はnilを返す。
+func (t *BTree) Get(key Item) Item {
+	if t.root == nil {
+		return nil
+	}
+	return t.root.get(key)
+}
+
+// Minは，木の中で最も小さい項目を返し，木が空の場合はnilを返す。
+func (t *BTree) Min() Item {
+	return min(t.root)
+}
+
+// Maxは，木の中で最大の項目を返し，木が空であればnilを返す。
+func (t *BTree) Max() Item {
+	return max(t.root)
+}
+
+// 与えられたキーがツリー内にある場合、Hasはtrueを返します。
+func (t *BTree) Has(key Item) bool {
+	return t.Get(key) != nil
+}
+
+// Lenは、現在ツリーにあるアイテムの数を返します。
+func (t *BTree) Len() int {
+	return t.length
+}
+
+// Clearは、btreeからすべてのアイテムを削除します。 addNodesToFreelistがtrueの場合、tのノードはこの呼び出しの一部として、freelistが一杯になるまでそのfreelistに追加されます。
+// そうでない場合は、ルートノードは単に参照解除され、サブツリーはGoの通常のGC処理に委ねられます。
+//
+// これは、すべての要素に対してDeleteを呼び出すよりもはるかに高速に実行できます。 また、古いツリーを置き換えるために新しいツリーを作成するよりも、多少速くなります。
+// なぜなら、古いツリーのノードはガベージコレクタに失われるのではなく、新しいツリーで使用するためにフリーリストに再要求されるからです。
+//
+// この呼び出しには、次のような時間がかかります：
+// O(1): addNodesToFreelistがfalseのとき、これは1回の処理です。
+// =O(1): フリーリストがすでに満杯の場合、すぐに脱走する。
+// O(freelist size): freelistが空で、ノードがすべてこの木の所有物であるとき、満杯になるまでfreelistにノードが追加される。
+// O(tree size): すべてのノードが別の木に所有されている場合、フリーリストに追加するノードを探してすべてのノードを反復処理するが、所有権の関係で追加されない。
+func (t *BTree) Clear(addNodesToFreelist bool) {
+	if t.root != nil && addNodesToFreelist {
+		t.root.reset(t.cow)
+	}
+	t.root, t.length = nil, 0
+}
+
+// reset は、freelist にサブツリーを返します。 freelistが満杯の場合、反復することの唯一の利点はfreelistを満杯にすることであるため、すぐに脱落する。
+// 親のリセット呼び出しが継続されるべき場合は、trueを返します。
+func (n *node) reset(c *copyOnWriteContext) bool {
+	for _, child := range n.children {
+		if !child.reset(c) {
+			return false
+		}
+	}
+	return c.freeNode(n) != ftFreelistFull
+}
+
+// Lessは、int(a) < int(b)の場合に真を返す。
+func (a Int) Less(b Item) bool {
+	return a < b.(Int)
+}
