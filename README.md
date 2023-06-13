@@ -2,6 +2,11 @@
 btree
 
 This cli tool compares speeds in btree and map, respectively. This allows you to experience the speed of indexes used in databases and other applications.
+## Install
+```
+go install github.com/seipan/btree/cmd/btree@latest
+```
+
 ## Example
 ```
 $ go run main.go --N=60000000
