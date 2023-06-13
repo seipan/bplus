@@ -21,8 +21,8 @@ THE SOFTWARE.
 */
 package main
 
-import "github.com/seipan/btree/cmd"
+import "github.com/seipan/btree/cmd/btree"
 
 func main() {
-	cmd.Execute()
+	btree.Execute()
 }

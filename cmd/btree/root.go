@@ -19,7 +19,7 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 */
-package cmd
+package btree
 
 import (
 	"fmt"
@@ -45,29 +45,63 @@ var rootCmd = &cobra.Command{
 		mdp := btree.NewDefaultdb()
 		defer mdp.Close()
 
-		n, _ := strconv.Atoi(key)
+		n, err := strconv.Atoi(key)
+		if err != nil {
+			log.Fatal(err)
+		}
 
-		_ = btree.New(n)
+		btr := btree.New(n)
+		timedp := MeasurerDMP(n, mdp, SetMap)
+		log.Println(timedp)
+		timedp = MeasurerDMP(n, mdp, GetMap)
+		log.Println(timedp)
+
+		timebtr := MeasurerBtree(n, btr, SetBtree)
+		log.Println(timebtr)
+		timebtr = MeasurerBtree(n, btr, GetBtree)
+		log.Println(timebtr)
+
 	},
 }
 
 func SetMap(N int, mdp *btree.Defaultdb) {
 	fmt.Println("--------------------------- default map create ---------------------------")
 	for i := 0; i < N; i++ {
-		mdp.Set(string(i), "test"+string(i))
+		mdp.Set(strconv.Itoa(i), strconv.Itoa(i))
 	}
 	fmt.Println("--------------------------- default map create ---------------------------")
 }
 
 func GetMap(N int, mdp *btree.Defaultdb) {
 	fmt.Println("--------------------------- default map get ---------------------------")
-	mdp.GetValue("test" + string(N-2))
+	mdp.GetValue(strconv.Itoa(N - 2))
 	fmt.Println("--------------------------- default map get ---------------------------")
 }
 
-func Measurer(fnc func()) time.Duration {
+func SetBtree(N int, btr *btree.BTree) {
+	fmt.Println("--------------------------- btree create ---------------------------")
+	for i := 0; i < N; i++ {
+		btr.ReplaceOrInsert(btree.Int(i))
+	}
+	fmt.Println("--------------------------- btree create ---------------------------")
+}
+
+func GetBtree(N int, btr *btree.BTree) {
+	fmt.Println("--------------------------- btree get ---------------------------")
+	btr.Get(btree.Int(N - 2))
+	fmt.Println("--------------------------- btree get ---------------------------")
+}
+
+func MeasurerDMP(N int, mdp *btree.Defaultdb, fnc func(N int, mdp *btree.Defaultdb)) time.Duration {
 	start := time.Now()
-	fnc()
+	fnc(N, mdp)
+	end := time.Now()
+	return end.Sub(start)
+}
+
+func MeasurerBtree(N int, btr *btree.BTree, fnc func(N int, btr *btree.BTree)) time.Duration {
+	start := time.Now()
+	fnc(N, btr)
 	end := time.Now()
 	return end.Sub(start)
 }
